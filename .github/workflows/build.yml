@@ -1,0 +1,104 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main, master]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-windows:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      
+      - name: Install cross-compilation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: docx2pdf-converter/package.json
+      
+      - name: Install frontend dependencies
+        working-directory: docx2pdf-converter
+        run: npm ci
+      
+      - name: Build application
+        working-directory: docx2pdf-converter/src-tauri
+        run: cargo build --target x86_64-pc-windows-gnu --release
+      
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-executable
+          path: docx2pdf-converter/src-tauri/target/x86_64-pc-windows-gnu/release/docx2pdf-converter.exe
+      
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: docx2pdf-converter/src-tauri/target/x86_64-pc-windows-gnu/release/docx2pdf-converter.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+      
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libappindicator3-dev librsvg2-dev patchelf
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: docx2pdf-converter/package.json
+      
+      - name: Install frontend dependencies
+        working-directory: docx2pdf-converter
+        run: npm ci
+      
+      - name: Build application
+        working-directory: docx2pdf-converter/src-tauri
+        run: cargo build --release
+      
+      - name: Upload Linux executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-executable
+          path: docx2pdf-converter/src-tauri/target/release/docx2pdf-converter
+      
+      - name: Create Release (Linux)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: docx2pdf-converter/src-tauri/target/release/docx2pdf-converter
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

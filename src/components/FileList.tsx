@@ -1,8 +1,9 @@
-import { FileText, X, CheckCircle, AlertCircle, Loader2 } from 'lucide-react'
+import { FileText, X, CheckCircle, AlertCircle, Loader2, ExternalLink } from 'lucide-react'
 
 interface ConversionFile {
   path: string;
   name: string;
+  outputPath?: string;
   status: 'pending' | 'converting' | 'completed' | 'error';
   progress: number;
   error?: string;
@@ -11,9 +12,10 @@ interface ConversionFile {
 interface FileListProps {
   files: ConversionFile[]
   onRemove: (index: number) => void
+  onOpenPdf?: (path: string) => void
 }
 
-export default function FileList({ files, onRemove }: FileListProps) {
+export default function FileList({ files, onRemove, onOpenPdf }: FileListProps) {
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'completed':
@@ -97,6 +99,18 @@ export default function FileList({ files, onRemove }: FileListProps) {
                 />
               </div>
             </div>
+          )}
+
+          {/* Open PDF Button for completed files - PROMINENT VERSION */}
+          {file.status === 'completed' && file.outputPath && onOpenPdf && (
+            <button
+              onClick={() => onOpenPdf(file.outputPath!)}
+              className="flex-shrink-0 mr-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold text-sm flex items-center gap-2 shadow-md hover:shadow-lg transform hover:scale-105 transition-all duration-200"
+              title="Open PDF"
+            >
+              <ExternalLink size={18} />
+              Open PDF
+            </button>
           )}
 
           {/* Remove Button */}

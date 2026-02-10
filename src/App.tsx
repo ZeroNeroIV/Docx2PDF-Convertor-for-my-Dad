@@ -1,14 +1,15 @@
 import { useState, useEffect } from 'react'
-import { invoke } from '@tauri-apps/api/tauri'
+import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import DropZone from './components/DropZone'
 import FileList from './components/FileList'
 import ProgressBar from './components/ProgressBar'
-import { FileText, CheckCircle, AlertCircle, FolderOpen } from 'lucide-react'
+import { FileText, CheckCircle, AlertCircle, FolderOpen, RefreshCw } from 'lucide-react'
 
 interface ConversionFile {
   path: string;
   name: string;
+  outputPath?: string;
   status: 'pending' | 'converting' | 'completed' | 'error';
   progress: number;
   error?: string;
@@ -16,6 +17,7 @@ interface ConversionFile {
 
 interface ConversionProgress {
   file_path: string;
+  output_path?: string;
   progress: number;
   status: string;
   error?: string;
@@ -26,18 +28,19 @@ function App() {
   const [outputDir, setOutputDir] = useState<string>('')
   const [isConverting, setIsConverting] = useState(false)
   const [overallProgress, setOverallProgress] = useState(0)
-  const [updateAvailable, setUpdateAvailable] = useState<string | null>(null)
-  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false)
+  const [libreOfficeAvailable, setLibreOfficeAvailable] = useState<boolean | null>(null)
+  const [isCheckingLibreOffice, setIsCheckingLibreOffice] = useState(true)
 
   useEffect(() => {
     // Listen for conversion progress updates
     const unlisten = listen<ConversionProgress>('conversion-progress', (event) => {
-      const { file_path, progress, status, error } = event.payload
-      
+      const { file_path, output_path, progress, status, error } = event.payload
+
       setFiles(prev => prev.map(f => {
         if (f.path === file_path) {
           return {
             ...f,
+            outputPath: output_path,
             progress,
             status: status as 'pending' | 'converting' | 'completed' | 'error',
             error
@@ -47,8 +50,9 @@ function App() {
       }))
     })
 
-    // Check for updates on startup (non-blocking)
-    checkForUpdates()
+    // Check for LibreOffice and set default output folder on startup
+    checkLibreOffice()
+    loadDefaultOutputFolder()
 
     return () => {
       unlisten.then(f => f())
@@ -65,17 +69,25 @@ function App() {
     }
   }, [files])
 
-  const checkForUpdates = async () => {
-    setIsCheckingUpdate(true)
+  const checkLibreOffice = async () => {
+    setIsCheckingLibreOffice(true)
     try {
-      const version = await invoke<string>('check_for_updates').catch(() => null)
-      if (version) {
-        setUpdateAvailable(version)
-      }
+      const available = await invoke<boolean>('check_libreoffice')
+      setLibreOfficeAvailable(available)
     } catch (error) {
-      // Silently fail - offline is okay
+      console.error('Failed to check LibreOffice:', error)
+      setLibreOfficeAvailable(false)
     } finally {
-      setIsCheckingUpdate(false)
+      setIsCheckingLibreOffice(false)
+    }
+  }
+
+  const loadDefaultOutputFolder = async () => {
+    try {
+      const downloadsPath = await invoke<string>('get_downloads_folder')
+      setOutputDir(downloadsPath)
+    } catch (error) {
+      console.error('Failed to get Downloads folder:', error)
     }
   }
 
@@ -86,13 +98,21 @@ function App() {
       status: 'pending',
       progress: 0
     }))
-    
+
     setFiles(prev => [...prev, ...fileObjects])
   }
 
   const handleRemoveFile = (index: number) => {
     if (!isConverting) {
       setFiles(prev => prev.filter((_, i) => i !== index))
+    }
+  }
+
+  const handleOpenPdf = async (path: string) => {
+    try {
+      await invoke('open_pdf', { path })
+    } catch (error) {
+      console.error('Failed to open PDF:', error)
     }
   }
 
@@ -109,7 +129,7 @@ function App() {
     if (files.length === 0 || isConverting) return
 
     setIsConverting(true)
-    
+
     try {
       // Reset all files to pending
       setFiles(prev => prev.map(f => ({ ...f, status: 'pending', progress: 0 })))
@@ -136,6 +156,82 @@ function App() {
   const completedCount = files.filter(f => f.status === 'completed').length
   const errorCount = files.filter(f => f.status === 'error').length
 
+  // Detect OS for installation instructions
+  const isWindows = navigator.userAgent.includes('Windows')
+
+  // LibreOffice Missing Modal
+  if (isCheckingLibreOffice) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Checking for LibreOffice...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (libreOfficeAvailable === false) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center p-6">
+        <div className="card max-w-lg w-full text-center">
+          <div className="mb-6">
+            <AlertCircle className="mx-auto text-red-500" size={64} />
+          </div>
+          <h1 className="text-2xl font-bold text-gray-800 mb-4">
+            LibreOffice Required
+          </h1>
+          <p className="text-gray-600 mb-6">
+            This app uses LibreOffice to convert Word documents to PDF. 
+            Please install LibreOffice to continue.
+          </p>
+          
+          <div className="bg-gray-50 rounded-lg p-4 mb-6 text-left">
+            <h2 className="font-semibold text-gray-700 mb-2">Installation Instructions:</h2>
+            {isWindows ? (
+              <div className="text-sm text-gray-600 space-y-2">
+                <p>1. Download LibreOffice from:</p>
+                <a 
+                  href="https://www.libreoffice.org/download/download/" 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="text-primary-600 hover:underline block ml-4"
+                >
+                  https://www.libreoffice.org/download/
+                </a>
+                <p>2. Run the installer and follow the prompts</p>
+                <p>3. Click "Retry" below after installation</p>
+              </div>
+            ) : (
+              <div className="text-sm text-gray-600 space-y-2">
+                <p className="font-medium">Ubuntu/Debian:</p>
+                <code className="block bg-gray-200 p-2 rounded text-xs ml-4">
+                  sudo apt install libreoffice
+                </code>
+                <p className="font-medium mt-2">Fedora:</p>
+                <code className="block bg-gray-200 p-2 rounded text-xs ml-4">
+                  sudo dnf install libreoffice
+                </code>
+                <p className="font-medium mt-2">Arch Linux:</p>
+                <code className="block bg-gray-200 p-2 rounded text-xs ml-4">
+                  sudo pacman -S libreoffice-still
+                </code>
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={checkLibreOffice}
+            className="btn-primary flex items-center justify-center mx-auto"
+          >
+            <RefreshCw className="mr-2" size={18} />
+            Retry
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 p-6">
       <div className="max-w-4xl mx-auto">
@@ -146,27 +242,14 @@ function App() {
             Docx2PDF Converter
           </h1>
           <p className="text-gray-600">
-            Simple offline document conversion for your dad
+            Simple offline document conversion
           </p>
         </div>
 
-        {/* Update Notification */}
-        {updateAvailable && (
-          <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
-            <div className="flex items-center text-blue-800">
-              <AlertCircle className="mr-2" size={20} />
-              <span>Version {updateAvailable} is available!</span>
-            </div>
-            <button className="text-blue-600 hover:text-blue-800 font-semibold">
-              Download Update
-            </button>
-          </div>
-        )}
-
         {/* Main Card */}
         <div className="card mb-6">
-          <DropZone 
-            onFilesAdded={handleFilesAdded} 
+          <DropZone
+            onFilesAdded={handleFilesAdded}
             disabled={isConverting}
           />
         </div>
@@ -188,10 +271,11 @@ function App() {
                 </button>
               )}
             </div>
-            
-            <FileList 
-              files={files} 
+
+            <FileList
+              files={files}
               onRemove={handleRemoveFile}
+              onOpenPdf={handleOpenPdf}
             />
           </div>
         )}
@@ -205,7 +289,7 @@ function App() {
                   Output Directory
                 </label>
                 <div className="text-sm text-gray-600 truncate">
-                  {outputDir || 'Same as input files (click to change)'}
+                  {outputDir || 'Downloads folder (click to change)'}
                 </div>
               </div>
               <button
@@ -281,8 +365,7 @@ function App() {
 
         {/* Footer */}
         <div className="mt-8 text-center text-sm text-gray-500">
-          <p>Works completely offline • No data leaves your computer</p>
-          {isCheckingUpdate && <p className="mt-1">Checking for updates...</p>}
+          <p>Works completely offline</p>
         </div>
       </div>
     </div>

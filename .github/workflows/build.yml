@@ -3,102 +3,197 @@ name: Build and Release
 on:
   push:
     branches: [main, master]
-    tags:
-      - 'v*'
   pull_request:
     branches: [main, master]
 
+permissions:
+  contents: write
+  packages: read
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   build-windows:
-    runs-on: ubuntu-latest
-    
+    runs-on: windows-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+        with:
+          lfs: true
+
+      - name: Pull LFS files
+        run: git lfs pull
+
       - name: Install Rust toolchain
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
         with:
-          targets: x86_64-pc-windows-gnu
-      
-      - name: Install cross-compilation dependencies
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build Tauri app
+        run: yarn tauri:build
+
+      - name: Debug - List target directory
         run: |
-          sudo apt-get update
-          sudo apt-get install -y mingw-w64
-      
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: docx2pdf-converter/package.json
-      
-      - name: Install frontend dependencies
-        working-directory: docx2pdf-converter
-        run: npm ci
-      
-      - name: Build application
-        working-directory: docx2pdf-converter/src-tauri
-        run: cargo build --target x86_64-pc-windows-gnu --release
-      
-      - name: Upload Windows executable
+          echo "Checking for release build..."
+          if exist "src-tauri\target\release" (
+            dir "src-tauri\target\release" | findstr "bundle docx2pdf"
+          ) else (
+            echo "Release directory not found"
+          )
+        shell: cmd
+
+      - name: Debug - Check entire bundle structure
+        run: |
+          echo "Full directory tree:"
+          tree /f "src-tauri\target\release" 2>nul || dir /s "src-tauri\target\release"
+        shell: cmd
+        continue-on-error: true
+
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: windows-executable
-          path: docx2pdf-converter/src-tauri/target/x86_64-pc-windows-gnu/release/docx2pdf-converter.exe
-      
-      - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v1
-        with:
-          files: docx2pdf-converter/src-tauri/target/x86_64-pc-windows-gnu/release/docx2pdf-converter.exe
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: windows-artifacts
+          path: src-tauri/target/release/bundle/
+          if-no-files-found: warn
 
   build-linux:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+        with:
+          lfs: true
+
       - name: Install Rust toolchain
-        uses: dtolnay/rust-action@stable
-      
-      - name: Install system dependencies
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Pull LFS files
+        run: git lfs pull
+
+      - name: Install system dependencies (Tauri v2)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libappindicator3-dev librsvg2-dev patchelf
-      
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libssl-dev patchelf
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: docx2pdf-converter/package.json
-      
-      - name: Install frontend dependencies
-        working-directory: docx2pdf-converter
-        run: npm ci
-      
-      - name: Build application
-        working-directory: docx2pdf-converter/src-tauri
-        run: cargo build --release
-      
-      - name: Upload Linux executable
+          node-version: "20"
+          cache: "yarn"
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build Tauri app
+        run: yarn tauri:build
+
+      - name: Upload Linux DEB package
         uses: actions/upload-artifact@v4
         with:
-          name: linux-executable
-          path: docx2pdf-converter/src-tauri/target/release/docx2pdf-converter
-      
-      - name: Create Release (Linux)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v1
+          name: linux-deb
+          path: src-tauri/target/release/bundle/deb/*.deb
+
+      - name: Upload Linux AppImage
+        uses: actions/upload-artifact@v4
         with:
-          files: docx2pdf-converter/src-tauri/target/release/docx2pdf-converter
+          name: linux-appimage
+          path: src-tauri/target/release/bundle/appimage/*.AppImage
+
+  release:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN_RELEASE }}
+
+      - name: Get version from tauri.conf.json
+        id: version
+        run: |
+          VERSION=$(grep '"version"' src-tauri/tauri.conf.json | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Get next tag version
+        id: next_tag
+        run: |
+          BASE_VERSION="${{ steps.version.outputs.version }}"
+          git fetch origin --tags
+          
+          # Find all tags matching the base version pattern
+          EXISTING_TAGS=$(git tag -l "v${BASE_VERSION}*" | sort -V)
+          
+          if [ -z "$EXISTING_TAGS" ]; then
+            # No existing tags, use base version
+            NEXT_TAG="v${BASE_VERSION}"
+          else
+            # Get the last tag
+            LAST_TAG=$(echo "$EXISTING_TAGS" | tail -1)
+            # Extract patch version and increment
+            if [[ $LAST_TAG =~ ^v([0-9]+\.[0-9]+\.[0-9]+)\.([0-9]+)$ ]]; then
+              # Has patch suffix like v1.0.0.1
+              PATCH=${BASH_REMATCH[2]}
+              NEXT_PATCH=$((PATCH + 1))
+              NEXT_TAG="v${BASE_VERSION}.${NEXT_PATCH}"
+            else
+              # First increment, add .1
+              NEXT_TAG="v${BASE_VERSION}.1"
+            fi
+          fi
+          
+          echo "next_tag=$NEXT_TAG" >> $GITHUB_OUTPUT
+          echo "Using tag: $NEXT_TAG"
+
+      - name: Create and push tag
+        run: |
+          TAG="${{ steps.next_tag.outputs.next_tag }}"
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "Created tag: $TAG"
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-artifacts
+          path: ./artifacts/windows/
+
+      - name: Download Linux DEB
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-deb
+          path: ./artifacts/linux/
+
+      - name: Download Linux AppImage
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-appimage
+          path: ./artifacts/linux/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.next_tag.outputs.next_tag }}
+          token: ${{ secrets.TOKEN_RELEASE }}
+          files: |
+            ./artifacts/windows/*
+            ./artifacts/linux/*
           draft: false
           prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          generate_release_notes: true

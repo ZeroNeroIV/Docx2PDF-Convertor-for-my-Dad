@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { invoke } from '@tauri-apps/api/tauri'
+import { invoke } from '@tauri-apps/api/core'
 import { Upload, FileText } from 'lucide-react'
 
 interface DropZoneProps {
@@ -42,7 +42,7 @@ export default function DropZone({ onFilesAdded, disabled = false }: DropZonePro
     if (e.dataTransfer.files) {
       for (let i = 0; i < e.dataTransfer.files.length; i++) {
         const file = e.dataTransfer.files[i]
-        if (file.name.toLowerCase().endsWith('.docx')) {
+        if (file.name.toLowerCase().endsWith('.docx') || file.name.toLowerCase().endsWith('.doc')) {
           // Get the file path using Tauri
           try {
             const path = await invoke<string>('get_dropped_file_path', { 
@@ -101,7 +101,7 @@ export default function DropZone({ onFilesAdded, disabled = false }: DropZonePro
         
         <div>
           <p className="text-lg font-medium text-gray-700">
-            {isDragging ? 'Drop files here' : 'Drag & drop DOCX files here'}
+            {isDragging ? 'Drop files here' : 'Drag & drop Word files here'}
           </p>
           <p className="text-sm text-gray-500 mt-1">
             or click to browse
@@ -110,7 +110,8 @@ export default function DropZone({ onFilesAdded, disabled = false }: DropZonePro
         
         <div className="flex justify-center space-x-2 text-xs text-gray-400">
           <span className="bg-gray-100 px-2 py-1 rounded">.docx</span>
-          <span>files only</span>
+          <span className="bg-gray-100 px-2 py-1 rounded">.doc</span>
+          <span>files supported</span>
         </div>
       </div>
     </div>

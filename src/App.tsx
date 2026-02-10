@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { invoke } from '@tauri-apps/api/tauri'
+import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import DropZone from './components/DropZone'
 import FileList from './components/FileList'
@@ -9,6 +9,7 @@ import { FileText, CheckCircle, AlertCircle, FolderOpen } from 'lucide-react'
 interface ConversionFile {
   path: string;
   name: string;
+  outputPath?: string;
   status: 'pending' | 'converting' | 'completed' | 'error';
   progress: number;
   error?: string;
@@ -16,6 +17,7 @@ interface ConversionFile {
 
 interface ConversionProgress {
   file_path: string;
+  output_path?: string;
   progress: number;
   status: string;
   error?: string;
@@ -32,12 +34,13 @@ function App() {
   useEffect(() => {
     // Listen for conversion progress updates
     const unlisten = listen<ConversionProgress>('conversion-progress', (event) => {
-      const { file_path, progress, status, error } = event.payload
-      
+      const { file_path, output_path, progress, status, error } = event.payload
+
       setFiles(prev => prev.map(f => {
         if (f.path === file_path) {
           return {
             ...f,
+            outputPath: output_path,
             progress,
             status: status as 'pending' | 'converting' | 'completed' | 'error',
             error
@@ -86,13 +89,21 @@ function App() {
       status: 'pending',
       progress: 0
     }))
-    
+
     setFiles(prev => [...prev, ...fileObjects])
   }
 
   const handleRemoveFile = (index: number) => {
     if (!isConverting) {
       setFiles(prev => prev.filter((_, i) => i !== index))
+    }
+  }
+
+  const handleOpenPdf = async (path: string) => {
+    try {
+      await invoke('open_pdf', { path })
+    } catch (error) {
+      console.error('Failed to open PDF:', error)
     }
   }
 
@@ -109,7 +120,7 @@ function App() {
     if (files.length === 0 || isConverting) return
 
     setIsConverting(true)
-    
+
     try {
       // Reset all files to pending
       setFiles(prev => prev.map(f => ({ ...f, status: 'pending', progress: 0 })))
@@ -165,8 +176,8 @@ function App() {
 
         {/* Main Card */}
         <div className="card mb-6">
-          <DropZone 
-            onFilesAdded={handleFilesAdded} 
+          <DropZone
+            onFilesAdded={handleFilesAdded}
             disabled={isConverting}
           />
         </div>
@@ -188,10 +199,11 @@ function App() {
                 </button>
               )}
             </div>
-            
-            <FileList 
-              files={files} 
+
+            <FileList
+              files={files}
               onRemove={handleRemoveFile}
+              onOpenPdf={handleOpenPdf}
             />
           </div>
         )}
